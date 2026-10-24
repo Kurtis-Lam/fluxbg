@@ -1,1 +1,3 @@
-<wallpaper xmlns:android="http://schemas.android.com/apk/res/android" android:description="@string/app_name"/>
+<wallpaper xmlns:android="http://schemas.android.com/apk/res/android"
+    android:description="@string/app_name"
+    android:settingsActivity="com.me.fluxbg.MainActivity"/>
