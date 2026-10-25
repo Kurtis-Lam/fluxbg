@@ -15,6 +15,13 @@ Designed for Huawei phones (EMUI 8+ and HarmonyOS versions that run Android APKs
 - Crop is adapted automatically to each screen's aspect ratio, including foldables
 - Muted, GPU-rendered playback that pauses when the screen is off to save battery
 
+## Get the APK
+
+There are two ways to get the app:
+
+1. **Download a prebuilt APK** from the [`apks/`](apks/) folder in this repo. This is the quickest option, but the prebuilt APKs are not rebuilt on every commit, so they **might not include the latest updates**.
+2. **Build it yourself** from the source (see [Build](#build) below). This is the way to get the latest code changes.
+
 ## Build
 
 Requirements: Android Studio, JDK 17 or newer, Android SDK Platform 34.
@@ -35,7 +42,7 @@ Keep the project outside cloud-synced folders (Synology Drive, iCloud, Dropbox),
 
 ## Usage
 
-1. Install the APK and open **fluxbg**.
+1. Install the APK (downloaded from `apks/` or built yourself) and open **fluxbg**.
 2. Choose **Home screen**, **Lock screen** or **Both** at the top.
 3. Tap **Choose a video**.
 4. Drag and pinch the crop window over the preview to frame the shot.
@@ -53,6 +60,7 @@ To change the video, crop or range later, edit it in the app and apply the wallp
 - Looping uses `MediaPlayer` seeking, so there may be a brief hitch at the loop point, especially with long keyframe intervals. Re-encoding the clip with frequent keyframes helps.
 - Very high-resolution or long videos use more battery and storage. The selected video is copied into the app's private storage.
 - HTML-based animated backgrounds are not supported yet.
+- The APKs in `apks/` may be older than the current source code. Build from source for the latest changes.
 
 ## Project structure
 
@@ -64,8 +72,22 @@ app/src/main/java/com/me/fluxbg/
   FluxWallpaperService.kt   Live wallpaper service (home / lock aware)
   VideoRenderer.kt          OpenGL ES renderer for the cropped, trimmed video
   Store.kt                  Per-screen settings storage and crop fitting
+apks/                       Prebuilt APKs (may not match the latest code)
 ```
 
-## License
+---
 
-MIT. Add a `LICENSE` file if you want to publish under it.
+## 📜 License
+
+This application's source code is shared under the **PolyForm Noncommercial License 1.0.0**. 
+
+* **Personal & Educational Use:** Free to use, modify, and explore. You must give credit to the original author.
+* **Commercial Use:** If you intend to use this code to earn revenue, build a commercial product, or use it within a business, you **must purchase a commercial license**.
+
+For commercial licensing terms and pricing, please contact me at: `kurtislam100@gmail.com`
+
+---
+
+## 🙌 Acknowledgements
+
+Built with ❤️ by Kurtis.
