@@ -1,18 +1,22 @@
 # fluxbg
 
-An Android live wallpaper app designed for Huawei phones. Pick a video from your gallery, crop it, trim it on a video-editor style timeline, and use it as your home screen and/or lock screen wallpaper.
+An Android wallpaper app designed for Huawei phones. Add a static image or a dynamic video from your gallery, crop it, trim videos on a video-editor style timeline, and use it as your home screen and/or lock screen wallpaper.
 
 Designed for Huawei phones (EMUI 8+ and HarmonyOS versions that run Android APKs, such as HarmonyOS 2 to 4.x). It targets Android 8.0+ (API 26) and works on all Huawei phone lines: Pura, Mate, nova, P, Y and the foldables. It should also work on other Android devices.
 
 ## Features
 
-- Home screen is a library of every video you have added, with thumbnails and durations
-- Add a video from the gallery, then go straight to the editor
-- Crop with a fixed-aspect window matched to your screen: drag to move, pinch to resize
-- Trim with a timeline bar: thumbnail strip, draggable in/out handles and a scrub playhead
+- Home screen is **My library**, with **Images** and **Videos** buttons to switch between everything you have added
+- **Add wallpaper** asks for **Static** (upload an image) or **Dynamic** (pick a video), then goes straight to the editor
+- Crop with a fixed-aspect window matched to your screen: drag the sides or corners to resize, drag inside to move, or pinch
+- Trim videos with a timeline bar: thumbnail strip, draggable in/out handles and a scrub playhead; long videos show 10 seconds at a time and the timeline scrolls sideways
 - Preview playback that loops only the trimmed range
 - Separate settings for the home screen, the lock screen, or both
-- Lock screen option that sets the frame at the playhead, with a fallback to the system Set as sheet
+- Applying always asks before overwriting your current wallpaper, then returns you to the library
+- Static images are set directly, with no system preview
+- Lock screen option that sets the frame at the playhead (or the cropped image), checks that the phone really changed it, and falls back to the system Set as sheet
+- Asks for storage access when the fallback needs it (Android 9 and older)
+- App-styled pop-ups for every confirmation and message
 - Crop is adapted automatically to each screen's aspect ratio, including foldables
 - Muted, GPU-rendered playback that pauses when the screen is off to save battery
 
@@ -44,21 +48,21 @@ Keep the project outside cloud-synced folders (Synology Drive, iCloud, Dropbox),
 ## Usage
 
 1. Install the APK (downloaded from `apks/` or built yourself) and open **fluxbg**.
-3. On the home screen, tap **Add video** and pick a clip, or tap a video you added earlier. Hold a video to delete it.
-4. In the editor, drag and pinch the crop window over the preview to frame the shot.
-5. Drag the handles on the timeline to set the in and out points. Drag anywhere else on the bar to scrub.
-6. Tap the play button to preview the loop.
-7. Under **Apply to**, choose **Home screen**, **Lock screen** or **Both**, then tap the main button and confirm in the system preview.
-8. For the lock screen, the main button sets the frame at the playhead as your lock screen picture. If your device blocks that, the system **Set as** sheet opens so you can pick Lock screen. **Try live video on lock screen** opens the live wallpaper preview instead.
+2. Tap **Add wallpaper** and choose **Static** to upload an image or **Dynamic** to pick a video. Or open **My library**, use **Images** / **Videos** to switch, and tap an item you added earlier. Hold an item to delete it.
+3. In the editor, drag the sides or corners of the crop window (or pinch) to frame the shot, and drag inside it to move it.
+4. For videos, drag the handles on the timeline to set the in and out points, tap the bar to seek, and swipe the timeline to scroll through long clips. Tap the play button to preview the loop.
+5. Under **Apply to**, choose **Home screen**, **Lock screen** or **Both**, then tap the main button. fluxbg warns that it will overwrite your current wallpaper; confirm to apply and return to the library.
+6. Images are applied immediately. Dynamic videos open the system live wallpaper preview; confirm it there.
+7. For the lock screen, the main button sets a still picture (the frame at the playhead for videos). If your phone does not confirm the change, fluxbg offers the system **Set as** sheet so you can pick Lock screen. **Try live video on lock screen** opens the live wallpaper preview instead.
 
-To change the video, crop or range later, edit it in the app and apply the wallpaper again.
+To change the file, crop or range later, open it from the library and apply it again.
 
 ## Known limitations
 
 - Live lock screen support depends on your EMUI or HarmonyOS version. Huawei's Themes app may override third-party live wallpapers on the lock screen. Separate home and lock videos need Android 14 level support (HarmonyOS 4.2 and later); on older systems the lock screen uses the home screen settings.
 - HarmonyOS NEXT (5.0 and later) does not run Android APKs and is not supported.
 - Looping uses `MediaPlayer` seeking, so there may be a brief hitch at the loop point, especially with long keyframe intervals. Re-encoding the clip with frequent keyframes helps.
-- Very high-resolution or long videos use more battery and storage. The selected video is copied into the app's private storage.
+- Very high-resolution or long videos use more battery and storage. Selected videos and images are copied into the app's private storage.
 - HTML-based animated backgrounds are not supported yet.
 - The APKs in `apks/` may be older than the current source code. Build from source for the latest changes.
 
@@ -66,13 +70,15 @@ To change the video, crop or range later, edit it in the app and apply the wallp
 
 ```
 app/src/main/java/com/me/fluxbg/
-  MainActivity.kt           Home screen: library of stored videos, add and delete
-  EditorActivity.kt         Editor: preview playback, crop, timeline trim, apply actions
+  MainActivity.kt           Home screen: My library (Images / Videos), add, delete
+  EditorActivity.kt         Editor: preview, crop, timeline trim, apply actions
+  FluxDialog.kt             App-styled pop-ups (confirm, info, option sheet)
+  Images.kt                 Image decoding, EXIF rotation and cropping
   Ui.kt                     Shared colors and view helpers
-  Thumbs.kt                 Cached poster frames and durations for the library
-  PreviewFrame.kt           Keeps the video and crop overlay on the same rectangle
-  CropOverlayView.kt        Drag and pinch crop window
-  TrimBarView.kt            Timeline with thumbnails, trim handles and playhead
+  Thumbs.kt                 Cached previews and durations for the library
+  PreviewFrame.kt           Keeps the preview and crop overlay on the same rectangle
+  CropOverlayView.kt        Crop window: drag sides and corners, move, pinch
+  TrimBarView.kt            Scrollable timeline with thumbnails, trim handles and playhead
   FluxWallpaperService.kt   Live wallpaper service (home / lock aware)
   VideoRenderer.kt          OpenGL ES renderer for the cropped, trimmed video
   Store.kt                  Per-screen settings storage and crop fitting
