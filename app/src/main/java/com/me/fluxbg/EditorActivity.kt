@@ -264,7 +264,8 @@ class EditorActivity : Activity(), TextureView.SurfaceTextureListener {
             aspect = sm.widthPixels.toFloat() / sm.heightPixels.toFloat()
         }
         preview.addView(crop, FrameLayout.LayoutParams(-1, -1))
-        card.addView(preview, ui.lp(-1, (dm.heightPixels * 0.46f).toInt()))
+        val previewFraction = if (isImage) 0.46f else 0.36f
+        card.addView(preview, ui.lp(-1, (dm.heightPixels * previewFraction).toInt()))
 
         cropHint = ui.label("Drag the sides or corners to resize  ·  Drag inside to move  ·  Pinch works too", 12f, Ui.MUTED).apply {
             gravity = Gravity.CENTER
