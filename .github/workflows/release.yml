@@ -1,0 +1,79 @@
+name: Release APK
+
+on:
+  push:
+    branches: [main]          # change to master if that's your branch name
+    paths:
+      - 'app/src/**/*.kt'     # only Kotlin changes trigger a release
+  workflow_dispatch:          # lets you run it manually from the Actions tab
+
+permissions:
+  contents: write             # needed to create tags and releases
+
+concurrency:
+  group: release              # never run two releases at once
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0      # we need the full history and tags
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Work out next version
+        id: ver
+        run: |
+          last=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n1)
+          last=${last:-v1.2.0}                      # no tags yet: start from 1.2.0
+          IFS=. read -r MA MI PA <<< "${last#v}"
+
+          msg=$(git log -1 --pretty=%B)
+          if   [[ "$msg" == *"#major"* ]]; then MA=$((MA+1)); MI=0; PA=0
+          elif [[ "$msg" == *"#minor"* ]]; then MI=$((MI+1)); PA=0
+          else PA=$((PA+1)); fi
+
+          echo "name=$MA.$MI.$PA"                > "$GITHUB_OUTPUT"
+          echo "tag=v$MA.$MI.$PA"               >> "$GITHUB_OUTPUT"
+          echo "code=$((MA*10000 + MI*100 + PA))" >> "$GITHUB_OUTPUT"
+
+      - name: Decode signing keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
+          echo "KEYSTORE_FILE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+
+      - name: Build signed APK
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease \
+            -PappVersionName=${{ steps.ver.outputs.name }} \
+            -PappVersionCode=${{ steps.ver.outputs.code }}
+
+      - name: Rename APK
+        run: |
+          cp app/build/outputs/apk/release/app-release.apk \
+             "fluxbg-${{ steps.ver.outputs.tag }}.apk"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.ver.outputs.tag }}" \
+            "fluxbg-${{ steps.ver.outputs.tag }}.apk" \
+            --target "$GITHUB_SHA" \
+            --title "fluxbg ${{ steps.ver.outputs.tag }}" \
+            --generate-notes

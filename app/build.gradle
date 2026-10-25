@@ -1,8 +1,30 @@
 plugins { id 'com.android.application'; id 'org.jetbrains.kotlin.android' }
+
+// CI passes these in; local builds fall back to the defaults.
+def vName = project.findProperty('appVersionName') ?: '1.2'
+def vCode = (project.findProperty('appVersionCode') ?: '3') as int
+def ksFile = System.getenv('KEYSTORE_FILE')
+
 android {
     namespace 'com.me.fluxbg'
     compileSdk 34
-    defaultConfig { applicationId 'com.me.fluxbg'; minSdk 26; targetSdk 34; versionCode 3; versionName '1.2' }
+    defaultConfig { applicationId 'com.me.fluxbg'; minSdk 26; targetSdk 34; versionCode vCode; versionName vName }
     compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = '17' }
+
+    signingConfigs {
+        release {
+            if (ksFile) {
+                storeFile file(ksFile)
+                storePassword System.getenv('KEYSTORE_PASSWORD')
+                keyAlias System.getenv('KEY_ALIAS')
+                keyPassword System.getenv('KEY_PASSWORD')
+            }
+        }
+    }
+    buildTypes {
+        release {
+            signingConfig ksFile ? signingConfigs.release : signingConfigs.debug
+        }
+    }
 }
