@@ -12,7 +12,6 @@ captures/
 .cxx/
 
 # Build outputs
-*.apk
 *.aab
 *.ap_
 *.dex
