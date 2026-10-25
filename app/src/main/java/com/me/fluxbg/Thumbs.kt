@@ -12,7 +12,7 @@ import java.io.FileOutputStream
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 
-/** Loads and caches a poster frame and the duration for each stored video. */
+/** Loads and caches a poster frame and the duration for each stored video, or a preview of each image. */
 object Thumbs {
     private val cache = LruCache<String, Bitmap>(64)
     private val durations = ConcurrentHashMap<String, Long>()
@@ -30,25 +30,40 @@ object Thumbs {
         exec.execute {
             var bmp: Bitmap? = null
             var dur = 0L
+            val isImage = Store.isImage(file)
             val r = MediaMetadataRetriever()
             try {
-                r.setDataSource(File(app.filesDir, file).absolutePath)
-                dur = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
                 val disk = File(app.cacheDir, "thumb_$file.jpg")
-                if (disk.exists()) bmp = BitmapFactory.decodeFile(disk.absolutePath)
-                if (bmp == null) {
-                    val at = minOf(1_000_000L, dur * 500L)
-                    val raw = r.getFrameAtTime(at, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-                    if (raw != null) {
-                        val scaled: Bitmap = if (raw.height > 480) {
-                            Bitmap.createScaledBitmap(raw, (raw.width * 480f / raw.height).toInt().coerceAtLeast(1), 480, true)
-                        } else raw
-                        if (scaled !== raw) raw.recycle()
-                        try {
-                            FileOutputStream(disk).use { scaled.compress(Bitmap.CompressFormat.JPEG, 85, it) }
-                        } catch (_: Exception) {
+                if (isImage) {
+                    if (disk.exists()) bmp = BitmapFactory.decodeFile(disk.absolutePath)
+                    if (bmp == null) {
+                        bmp = Images.decode(File(app.filesDir, file), 640)
+                        val made = bmp
+                        if (made != null) {
+                            try {
+                                FileOutputStream(disk).use { made.compress(Bitmap.CompressFormat.JPEG, 85, it) }
+                            } catch (_: Exception) {
+                            }
                         }
-                        bmp = scaled
+                    }
+                } else {
+                    r.setDataSource(File(app.filesDir, file).absolutePath)
+                    dur = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+                    if (disk.exists()) bmp = BitmapFactory.decodeFile(disk.absolutePath)
+                    if (bmp == null) {
+                        val at = minOf(1_000_000L, dur * 500L)
+                        val raw = r.getFrameAtTime(at, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                        if (raw != null) {
+                            val scaled: Bitmap = if (raw.height > 480) {
+                                Bitmap.createScaledBitmap(raw, (raw.width * 480f / raw.height).toInt().coerceAtLeast(1), 480, true)
+                            } else raw
+                            if (scaled !== raw) raw.recycle()
+                            try {
+                                FileOutputStream(disk).use { scaled.compress(Bitmap.CompressFormat.JPEG, 85, it) }
+                            } catch (_: Exception) {
+                            }
+                            bmp = scaled
+                        }
                     }
                 }
             } catch (_: Exception) {
@@ -57,7 +72,7 @@ object Thumbs {
             }
             val result = bmp
             if (result != null) cache.put(file, result)
-            if (dur > 0L) durations[file] = dur
+            if (dur > 0L || isImage) durations[file] = dur
             main.post { cb(result, dur) }
         }
     }
