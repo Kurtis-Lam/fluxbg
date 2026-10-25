@@ -18,6 +18,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.provider.MediaStore
+import android.provider.Settings
 import android.util.DisplayMetrics
 import android.view.Gravity
 import android.view.Surface
@@ -25,29 +26,37 @@ import android.view.TextureView
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
+import android.widget.HorizontalScrollView
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
-import android.widget.Toast
 import java.io.File
 
 /**
- * Editor for one stored video: preview playback, crop, timeline trim, and applying it as a wallpaper.
+ * Editor for one stored image or video: preview, crop, timeline trim (video only), and applying it
+ * as a wallpaper. After applying, the editor closes and returns to the library.
  */
 class EditorActivity : Activity(), TextureView.SurfaceTextureListener {
 
     companion object {
         const val EXTRA_FILE = "file"
+        const val EXTRA_MSG = "msg"
         private const val REQ_STORAGE = 7
+        private const val RES_OK = 1
+        private const val RES_UNVERIFIED = 2
     }
 
     private enum class Target { HOME, LOCK, BOTH }
 
-    private val thumbCount = 12
+    private var thumbCount = 12
     private val handler = Handler(Looper.getMainLooper())
     private lateinit var ui: Ui
 
     private lateinit var file: String
+    private var isImage = false
+    private var ready = false
+    private var busy = false
     private var target = Target.HOME
     private var durationMs = 0L
     private var startMs = 0L
@@ -61,10 +70,19 @@ class EditorActivity : Activity(), TextureView.SurfaceTextureListener {
     private var wantPlay = true
     @Volatile private var gen = 0
 
+    private var afterPermission: (() -> Unit)? = null
+    private var afterDenied: (() -> Unit)? = null
+
     private lateinit var segViews: List<TextView>
+    private lateinit var videoOnly: List<View>
+    private lateinit var titleLabel: TextView
+    private lateinit var cropHint: TextView
+    private lateinit var trimHint: TextView
     private lateinit var preview: PreviewFrame
     private lateinit var tv: TextureView
+    private var imageView: ImageView? = null
     private lateinit var crop: CropOverlayView
+    private lateinit var trimScroll: HorizontalScrollView
     private lateinit var trim: TrimBarView
     private lateinit var playBtn: TextView
     private lateinit var posLabel: TextView
@@ -82,7 +100,7 @@ class EditorActivity : Activity(), TextureView.SurfaceTextureListener {
                 val pos = p.currentPosition.toLong()
                 if (pos >= endMs - 30) p.seekTo(startMs, MediaPlayer.SEEK_CLOSEST)
                 val shown = pos.coerceIn(startMs, endMs)
-                trim.setPosition(shown)
+                trim.setPosition(shown, true)
                 posLabel.text = "${fmt(shown)} / ${fmt(durationMs)}"
             } catch (_: Exception) {
             }
@@ -100,7 +118,7 @@ class EditorActivity : Activity(), TextureView.SurfaceTextureListener {
         return "$m:${s.toString().padStart(2, '0')}.$d"
     }
 
-    private fun toast(m: String) = Toast.makeText(this, m, Toast.LENGTH_LONG).show()
+    private fun info(title: String, msg: String) = FluxDialog.info(this, title, msg)
 
     private fun slots(): List<String> = when (target) {
         Target.HOME -> listOf(Slot.HOME)
@@ -108,11 +126,25 @@ class EditorActivity : Activity(), TextureView.SurfaceTextureListener {
         Target.BOTH -> listOf(Slot.HOME, Slot.LOCK)
     }
 
+    private fun targetNames(): String = when (target) {
+        Target.HOME -> "home screen"
+        Target.LOCK -> "lock screen"
+        Target.BOTH -> "home screen and lock screen"
+    }
+
     private fun realMetrics(): DisplayMetrics {
         val dm = DisplayMetrics()
         @Suppress("DEPRECATION")
         windowManager.defaultDisplay.getRealMetrics(dm)
         return dm
+    }
+
+    private fun viewportPx() = resources.displayMetrics.widthPixels - ui.dp(68)
+
+    /** Closes the editor and returns to the library, optionally with a short message to show there. */
+    private fun finishHome(msg: String? = null) {
+        setResult(RESULT_OK, Intent().putExtra(EXTRA_MSG, msg))
+        finish()
     }
 
     // ---------------------------------------------------------------- UI
@@ -125,6 +157,7 @@ class EditorActivity : Activity(), TextureView.SurfaceTextureListener {
             return
         }
         file = f
+        isImage = Store.isImage(f)
         ui = Ui(this)
         window.statusBarColor = Ui.BG
         window.navigationBarColor = Ui.BG
@@ -135,9 +168,34 @@ class EditorActivity : Activity(), TextureView.SurfaceTextureListener {
             ?: Store.load(this, Slot.HOME)?.takeIf { it.file == file }
             ?: Store.load(this, Slot.LOCK)?.takeIf { it.file == file }
 
+        val usedSlots = Store.slotsUsing(this, file)
+        target = if (usedSlots.contains(Slot.LOCK) && !usedSlots.contains(Slot.HOME)) Target.LOCK else Target.HOME
+
+        if (isImage) {
+            wantPlay = false
+            val bmp = Images.decode(File(filesDir, file), 2048)
+            if (bmp == null) {
+                FluxDialog(this).icon("!").title("Image not supported")
+                    .message("fluxbg couldn’t open this image.")
+                    .button("OK", FluxDialog.PRIMARY) { finish() }
+                    .cancelable(false).show()
+                return
+            }
+            vidW = bmp.width
+            vidH = bmp.height
+            imageView?.setImageBitmap(bmp)
+            preview.setVideoSize(vidW, vidH)
+            saved?.let { crop.setCrop(it.cl, it.ct, it.cr, it.cb) }
+            updateTargetUi()
+            ready = true
+            return
+        }
+
         if (!readMetadata()) {
-            toast("This video format isn’t supported.")
-            finish()
+            FluxDialog(this).icon("!").title("Video not supported")
+                .message("This video format isn’t supported.")
+                .button("OK", FluxDialog.PRIMARY) { finish() }
+                .cancelable(false).show()
             return
         }
         startMs = (saved?.startMs ?: 0L).coerceIn(0L, (durationMs - 500L).coerceAtLeast(0L))
@@ -146,14 +204,17 @@ class EditorActivity : Activity(), TextureView.SurfaceTextureListener {
 
         preview.setVideoSize(vidW, vidH)
         saved?.let { crop.setCrop(it.cl, it.ct, it.cr, it.cb) }
-        trim.setRange(durationMs, startMs, endMs)
+        trim.setRange(durationMs, startMs, endMs, viewportPx())
+        trimHint.text = if (durationMs > TrimBarView.WINDOW_MS) {
+            "Showing 10 s at a time  ·  Swipe the timeline to scroll  ·  Tap to seek"
+        } else {
+            "Drag the handles to trim  ·  Tap the bar to seek"
+        }
         updateTimes(startMs)
         playBtn.text = "❚❚"
-
-        val usedLock = Store.slotsUsing(this, file)
-        target = if (usedLock.contains(Slot.LOCK) && !usedLock.contains(Slot.HOME)) Target.LOCK else Target.HOME
         updateTargetUi()
         loadThumbs()
+        ready = true
     }
 
     private fun buildUi() {
@@ -173,12 +234,13 @@ class EditorActivity : Activity(), TextureView.SurfaceTextureListener {
         }
         root.addView(col, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
 
-        val back = ui.label("‹  Videos", 15f, Ui.A, true).apply {
+        val back = ui.label("‹  My library", 15f, Ui.A, true).apply {
             setPadding(0, ui.dp(8), ui.dp(16), ui.dp(8))
             setOnClickListener { finish() }
         }
         col.addView(back, ui.lp(-2, -2))
-        col.addView(ui.label("Edit video", 28f, Ui.TEXT, true), ui.lp(-2, -2, 2))
+        titleLabel = ui.label(if (isImage) "Edit image" else "Edit video", 28f, Ui.TEXT, true)
+        col.addView(titleLabel, ui.lp(-2, -2, 2))
 
         // Editor card
         val card = LinearLayout(this).apply {
@@ -189,8 +251,14 @@ class EditorActivity : Activity(), TextureView.SurfaceTextureListener {
         col.addView(card, ui.lp(-1, -2, 16))
 
         preview = PreviewFrame(this).apply { setBackgroundColor(Color.BLACK) }
-        tv = TextureView(this).apply { surfaceTextureListener = this@EditorActivity }
-        preview.addView(tv, FrameLayout.LayoutParams(-1, -1))
+        if (isImage) {
+            val iv = ImageView(this).apply { scaleType = ImageView.ScaleType.FIT_XY }
+            imageView = iv
+            preview.addView(iv, FrameLayout.LayoutParams(-1, -1))
+        } else {
+            tv = TextureView(this).apply { surfaceTextureListener = this@EditorActivity }
+            preview.addView(tv, FrameLayout.LayoutParams(-1, -1))
+        }
         val sm = realMetrics()
         crop = CropOverlayView(this).apply {
             aspect = sm.widthPixels.toFloat() / sm.heightPixels.toFloat()
@@ -198,9 +266,10 @@ class EditorActivity : Activity(), TextureView.SurfaceTextureListener {
         preview.addView(crop, FrameLayout.LayoutParams(-1, -1))
         card.addView(preview, ui.lp(-1, (dm.heightPixels * 0.46f).toInt()))
 
-        card.addView(ui.label("Drag to move  ·  Pinch to resize the crop", 12f, Ui.MUTED).apply {
+        cropHint = ui.label("Drag the sides or corners to resize  ·  Drag inside to move  ·  Pinch works too", 12f, Ui.MUTED).apply {
             gravity = Gravity.CENTER
-        }, ui.lp(-1, -2, 8))
+        }
+        card.addView(cropHint, ui.lp(-1, -2, 8))
 
         val controls = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -234,7 +303,12 @@ class EditorActivity : Activity(), TextureView.SurfaceTextureListener {
                 }
             }
         }
-        card.addView(trim, ui.lp(-1, ui.dp(76), 14))
+        trimScroll = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            overScrollMode = View.OVER_SCROLL_NEVER
+        }
+        trimScroll.addView(trim, FrameLayout.LayoutParams(viewportPx(), ViewGroup.LayoutParams.MATCH_PARENT))
+        card.addView(trimScroll, ui.lp(-1, ui.dp(76), 14))
 
         val times = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         inLabel = ui.label("IN 0:00.0", 12f, Ui.MUTED, true)
@@ -244,6 +318,12 @@ class EditorActivity : Activity(), TextureView.SurfaceTextureListener {
         times.addView(lenLabel, LinearLayout.LayoutParams(0, -2, 1f))
         times.addView(outLabel, LinearLayout.LayoutParams(0, -2, 1f))
         card.addView(times, ui.lp(-1, -2, 4))
+
+        trimHint = ui.label("", 11f, Ui.MUTED).apply { gravity = Gravity.CENTER }
+        card.addView(trimHint, ui.lp(-1, -2, 6))
+
+        videoOnly = listOf(controls, trimScroll, times, trimHint)
+        if (isImage) videoOnly.forEach { it.visibility = View.GONE }
 
         // Target selector
         col.addView(ui.label("Apply to", 13f, Ui.MUTED, true), ui.lp(-2, -2, 20))
@@ -277,6 +357,13 @@ class EditorActivity : Activity(), TextureView.SurfaceTextureListener {
             v.setTextColor(if (on) Ui.DARK else Ui.MUTED)
             v.background = if (on) ui.gradient(12) else null
         }
+        val a = if (busy) 0.6f else 1f
+        primaryBtn.alpha = a
+        secondaryBtn.alpha = a
+        if (busy) {
+            primaryBtn.text = "Applying…"
+            return
+        }
         when (target) {
             Target.HOME -> {
                 primaryBtn.text = "Set as home screen wallpaper"
@@ -285,14 +372,19 @@ class EditorActivity : Activity(), TextureView.SurfaceTextureListener {
             Target.LOCK -> {
                 primaryBtn.text = "Set as lock screen wallpaper"
                 secondaryBtn.text = "Try live video on lock screen"
-                secondaryBtn.visibility = View.VISIBLE
+                secondaryBtn.visibility = if (isImage) View.GONE else View.VISIBLE
             }
             Target.BOTH -> {
-                primaryBtn.text = "Set live wallpaper on both screens"
+                primaryBtn.text = if (isImage) "Set on both screens" else "Set live wallpaper on both screens"
                 secondaryBtn.text = "Also set still frame on lock screen"
-                secondaryBtn.visibility = View.VISIBLE
+                secondaryBtn.visibility = if (isImage) View.GONE else View.VISIBLE
             }
         }
+    }
+
+    private fun setBusy(b: Boolean) {
+        busy = b
+        updateTargetUi()
     }
 
     private fun setTarget(t: Target) {
@@ -301,15 +393,40 @@ class EditorActivity : Activity(), TextureView.SurfaceTextureListener {
         updateTargetUi()
     }
 
-    private fun onPrimary() = when (target) {
-        Target.HOME, Target.BOTH -> applyLive()
-        Target.LOCK -> applyStill()
+    // ---------------------------------------------------------------- apply buttons
+
+    /** Always asks before replacing the wallpaper that is currently set. */
+    private fun confirmApply(names: String, extra: String?, go: () -> Unit) {
+        val msg = "This will overwrite your current $names wallpaper." + (if (extra != null) "\n\n$extra" else "")
+        FluxDialog(this).icon("↻").title("Apply wallpaper?").message(msg)
+            .button("Cancel", FluxDialog.SECONDARY)
+            .button("Apply", FluxDialog.PRIMARY) { go() }
+            .show()
     }
 
-    private fun onSecondary() = when (target) {
-        Target.LOCK -> applyLive()
-        Target.BOTH -> applyStill()
-        Target.HOME -> Unit
+    private fun onPrimary() {
+        if (busy) return
+        if (isImage) {
+            confirmApply(targetNames(), null) { applyImage() }
+            return
+        }
+        when (target) {
+            Target.HOME, Target.BOTH ->
+                confirmApply(targetNames(), "You will confirm the live wallpaper on the next screen.") { applyLive() }
+            Target.LOCK ->
+                confirmApply(targetNames(), "A still frame at the playhead is used for the lock screen.") { applyStill() }
+        }
+    }
+
+    private fun onSecondary() {
+        if (busy) return
+        when (target) {
+            Target.LOCK ->
+                confirmApply("lock screen", "You will confirm the live wallpaper on the next screen.") { applyLive() }
+            Target.BOTH ->
+                confirmApply("lock screen", "A still frame at the playhead replaces the lock screen picture.") { applyStill() }
+            Target.HOME -> Unit
+        }
     }
 
     // ---------------------------------------------------------------- video info
@@ -336,14 +453,16 @@ class EditorActivity : Activity(), TextureView.SurfaceTextureListener {
     private fun loadThumbs() {
         val g = ++gen
         val dur = durationMs
-        trim.clearThumbs(thumbCount)
+        val n = if (dur <= TrimBarView.WINDOW_MS) 12 else (dur / 1500L).toInt().coerceIn(12, 150)
+        thumbCount = n
+        trim.clearThumbs(n)
         Thread {
             val r = MediaMetadataRetriever()
             try {
                 r.setDataSource(File(filesDir, file).absolutePath)
-                for (i in 0 until thumbCount) {
+                for (i in 0 until n) {
                     if (g != gen) break
-                    val t = ((i + 0.5) / thumbCount * dur * 1000).toLong()
+                    val t = ((i + 0.5) / n * dur * 1000).toLong()
                     val b = r.getFrameAtTime(t, MediaMetadataRetriever.OPTION_CLOSEST_SYNC) ?: continue
                     val th = 160
                     val tw = (b.width * th / b.height.toFloat()).toInt().coerceAtLeast(1)
@@ -409,7 +528,7 @@ class EditorActivity : Activity(), TextureView.SurfaceTextureListener {
                 prepared = false
                 wantPlay = false
                 playBtn.text = "▶"
-                toast("Couldn’t play this video ($what/$extra).")
+                info("Couldn’t play this video", "Playback failed ($what/$extra).")
                 true
             }
             p.prepareAsync()
@@ -417,7 +536,7 @@ class EditorActivity : Activity(), TextureView.SurfaceTextureListener {
             releasePlayer()
             wantPlay = false
             playBtn.text = "▶"
-            toast("Couldn’t open that video.")
+            info("Couldn’t open that video", "fluxbg couldn’t start playback for this file.")
         }
     }
 
@@ -474,9 +593,11 @@ class EditorActivity : Activity(), TextureView.SurfaceTextureListener {
 
     private fun currentConfig(): Config {
         val c = crop.getCrop()
+        if (isImage) return Config(file, 0L, 0L, c[0], c[1], c[2], c[3], 0L)
         return Config(file, startMs, if (endMs >= durationMs) 0L else endMs, c[0], c[1], c[2], c[3], 0L)
     }
 
+    /** Live video: saves the settings, opens the system live wallpaper preview, and returns to the library. */
     private fun applyLive() {
         val cfg = currentConfig()
         Store.saveVideo(this, file, cfg)
@@ -487,82 +608,194 @@ class EditorActivity : Activity(), TextureView.SurfaceTextureListener {
                 Intent(WallpaperManager.ACTION_CHANGE_LIVE_WALLPAPER)
                     .putExtra(WallpaperManager.EXTRA_LIVE_WALLPAPER_COMPONENT, comp)
             )
+            finishHome()
         } catch (_: Exception) {
-            try {
-                startActivity(Intent(WallpaperManager.ACTION_LIVE_WALLPAPER_CHOOSER))
-                toast("Pick fluxbg from the live wallpaper list.")
-            } catch (_: Exception) {
-                toast("This device has no live wallpaper picker. Try Settings > Home screen & wallpaper.")
-            }
+            FluxDialog(this).icon("▶").title("Choose fluxbg")
+                .message("Your phone can’t open the preview directly. Pick fluxbg from the live wallpaper list on the next screen.")
+                .button("Cancel", FluxDialog.SECONDARY)
+                .button("Open list", FluxDialog.PRIMARY) {
+                    try {
+                        startActivity(Intent(WallpaperManager.ACTION_LIVE_WALLPAPER_CHOOSER))
+                        finishHome()
+                    } catch (_: Exception) {
+                        info("No wallpaper picker", "This device has no live wallpaper picker. Try Settings > Home screen & wallpaper.")
+                    }
+                }
+                .show()
         }
     }
 
-    /** Renders the cropped frame at the playhead and sets it as the lock screen picture. */
+    /** Still image: crops it to the screen and sets it directly, without the system preview. */
+    private fun applyImage() {
+        Store.saveVideo(this, file, currentConfig())
+        val c = crop.getCrop()
+        val dm = realMetrics()
+        val f = File(filesDir, file)
+        val flags = when (target) {
+            Target.HOME -> WallpaperManager.FLAG_SYSTEM
+            Target.LOCK -> WallpaperManager.FLAG_LOCK
+            Target.BOTH -> WallpaperManager.FLAG_SYSTEM or WallpaperManager.FLAG_LOCK
+        }
+        val msg = when (target) {
+            Target.HOME -> "Home screen updated"
+            Target.LOCK -> "Lock screen updated"
+            Target.BOTH -> "Home and lock screens updated"
+        }
+        val sl = slots()
+        applyBitmap(flags, msg, { Images.render(f, c, dm.widthPixels, dm.heightPixels) }) {
+            sl.forEach { Store.saveImage(this, it, file) }
+        }
+    }
+
+    /** Video: renders the cropped frame at the playhead and sets it as the lock screen picture. */
     private fun applyStill() {
         Store.saveVideo(this, file, currentConfig())
         val c = crop.getCrop()
         val posUs = trim.currentPosition() * 1000L
         val dm = realMetrics()
-        toast("Setting lock screen…")
-        Thread {
-            var out: Bitmap? = null
-            var err = ""
-            try {
-                out = renderFrame(posUs, c, dm.widthPixels, dm.heightPixels)
-            } catch (t: Throwable) {
-                err = t.javaClass.simpleName
-            }
+        applyBitmap(WallpaperManager.FLAG_LOCK, "Lock screen updated", {
+            renderFrame(posUs, c, dm.widthPixels, dm.heightPixels)
+        }) {}
+    }
 
-            var done = false
-            var uri: Uri? = null
-            var needPermission = false
-            val frame = out
-            if (frame != null) {
+    /**
+     * Renders a bitmap off the main thread and sets it with WallpaperManager. For the lock screen the
+     * result is verified, because some phones accept the call but keep showing the old picture; in
+     * that case (or if it is blocked) the user is offered the system "Set as" screen instead.
+     */
+    private fun applyBitmap(flags: Int, doneMsg: String, render: () -> Bitmap, onApplied: () -> Unit) {
+        val lock = (flags and WallpaperManager.FLAG_LOCK) != 0
+        val go = {
+            setBusy(true)
+            Thread {
+                var bmp: Bitmap? = null
+                var err = ""
                 try {
-                    val wm = WallpaperManager.getInstance(this)
-                    if (wm.isWallpaperSupported && wm.isSetWallpaperAllowed) {
-                        done = wm.setBitmap(frame, null, true, WallpaperManager.FLAG_LOCK) != 0
-                    }
-                } catch (_: Throwable) {
+                    bmp = render()
+                } catch (t: Throwable) {
+                    err = t.javaClass.simpleName
                 }
-                if (!done) {
-                    if (Build.VERSION.SDK_INT < 29 &&
-                        checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED
-                    ) {
-                        needPermission = true
-                    } else {
-                        uri = try { saveToGallery(frame) } catch (_: Throwable) { null }
+                val frame = bmp
+                val res = if (frame != null) setWallpaperBitmap(frame, flags) else 0
+                runOnUiThread {
+                    setBusy(false)
+                    if (frame == null) {
+                        info("Couldn’t prepare the picture", "Something went wrong while cropping ($err). Try a different crop.")
+                        return@runOnUiThread
+                    }
+                    when {
+                        res == RES_OK -> {
+                            onApplied()
+                            finishHome(doneMsg)
+                        }
+                        lock -> {
+                            if (res == RES_UNVERIFIED) onApplied()
+                            lockFallbackDialog(frame, res == RES_UNVERIFIED) { finishHome(doneMsg) }
+                        }
+                        else -> info("Couldn’t set the wallpaper", "Your phone didn’t let fluxbg change the home screen wallpaper.")
                     }
                 }
-            }
+            }.start()
+        }
+        if (lock && !hasStorage()) ensureStorage(go, go) else go()
+    }
 
-            val savedUri = uri
-            val setOk = done
-            val askPermission = needPermission
-            runOnUiThread {
-                when {
-                    setOk -> toast("Lock screen updated.")
-                    askPermission -> {
-                        requestPermissions(arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE), REQ_STORAGE)
-                        toast("Allow storage access, then tap the button again.")
-                    }
-                    savedUri != null -> openSetAs(savedUri)
-                    frame != null -> toast("Couldn’t set the lock screen on this device.")
-                    else -> toast("Couldn’t grab a frame from this video ($err).")
-                }
+    /** 0 = failed, RES_OK = set (and confirmed for the lock screen), RES_UNVERIFIED = set but not confirmed. */
+    private fun setWallpaperBitmap(frame: Bitmap, flags: Int): Int {
+        try {
+            val wm = WallpaperManager.getInstance(this)
+            if (!wm.isWallpaperSupported || !wm.isSetWallpaperAllowed) return 0
+            val id = wm.setBitmap(frame, null, true, flags)
+            if (id == 0) return 0
+            if ((flags and WallpaperManager.FLAG_LOCK) != 0 && wm.getWallpaperId(WallpaperManager.FLAG_LOCK) != id) {
+                return RES_UNVERIFIED
             }
-        }.start()
+            return RES_OK
+        } catch (_: Throwable) {
+            return 0
+        }
+    }
+
+    private fun lockFallbackDialog(frame: Bitmap, unverified: Boolean, done: () -> Unit) {
+        val d = FluxDialog(this).icon("🔒")
+        if (unverified) {
+            d.title("Check your lock screen")
+                .message("fluxbg set the picture, but your phone didn’t confirm the change. Some lock screens override apps. If it still looks the same, send the picture to the Set as screen and choose Lock screen.")
+                .button("It worked", FluxDialog.SECONDARY) { done() }
+        } else {
+            d.title("Couldn’t set it directly")
+                .message("Your phone blocked fluxbg from changing the lock screen. You can send the picture to the Set as screen and choose Lock screen there.")
+                .button("Cancel", FluxDialog.SECONDARY)
+        }
+        d.button("Use Set as", FluxDialog.PRIMARY) { openSetAsFlow(frame) }.show()
+    }
+
+    // ---------------------------------------------------------------- storage permission (Android 9 and older)
+
+    private fun hasStorage() =
+        Build.VERSION.SDK_INT >= 29 ||
+            checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
+
+    /** Asks for storage access when it is needed (Android 9 and older), then runs [go]. */
+    private fun ensureStorage(go: () -> Unit, declined: (() -> Unit)? = null) {
+        if (hasStorage()) {
+            go()
+            return
+        }
+        FluxDialog(this).icon("🔒").title("Allow storage access")
+            .message("To hand the picture to your phone’s Set as screen, fluxbg first saves it to your gallery. Tap Allow, then choose Allow in the next prompt.")
+            .button("Not now", FluxDialog.SECONDARY) { declined?.invoke() }
+            .button("Allow", FluxDialog.PRIMARY) {
+                afterPermission = go
+                afterDenied = declined
+                requestPermissions(arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE), REQ_STORAGE)
+            }
+            .show()
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == REQ_STORAGE) {
-            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                toast("Permission granted. Tap the button again.")
-            } else {
-                toast("Without storage access the lock screen can’t be set on this device.")
-            }
+        if (requestCode != REQ_STORAGE) return
+        val go = afterPermission
+        val denied = afterDenied
+        afterPermission = null
+        afterDenied = null
+        if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+            go?.invoke()
+        } else if (denied != null) {
+            denied()
+        } else {
+            FluxDialog(this).icon("🔒").title("Storage access denied")
+                .message("Without it fluxbg can’t hand the picture to the Set as screen. You can allow it in Settings > Apps > fluxbg > Permissions.")
+                .button("Not now", FluxDialog.SECONDARY)
+                .button("Open settings", FluxDialog.PRIMARY) {
+                    try {
+                        startActivity(
+                            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                                .setData(Uri.fromParts("package", packageName, null))
+                        )
+                    } catch (_: Exception) {
+                    }
+                }
+                .show()
         }
+    }
+
+    // ---------------------------------------------------------------- "Set as" fallback
+
+    private fun openSetAsFlow(frame: Bitmap) {
+        ensureStorage({
+            Thread {
+                val uri = try { saveToGallery(frame) } catch (_: Throwable) { null }
+                runOnUiThread {
+                    if (uri != null) {
+                        openSetAs(uri)
+                    } else {
+                        info("Couldn’t save the picture", "fluxbg couldn’t save the picture to your gallery, so it can’t open the Set as screen.")
+                    }
+                }
+            }.start()
+        })
     }
 
     private fun renderFrame(posUs: Long, c: FloatArray, sw: Int, sh: Int): Bitmap {
@@ -613,7 +846,7 @@ class EditorActivity : Activity(), TextureView.SurfaceTextureListener {
         return uri
     }
 
-    /** Opens the system "Set as" sheet, where Huawei lets you choose Lock screen. */
+    /** Opens the system "Set as" sheet, where Huawei lets you choose Lock screen, then returns to the library. */
     private fun openSetAs(uri: Uri) {
         val i = Intent(Intent.ACTION_ATTACH_DATA)
             .setDataAndType(uri, "image/png")
@@ -621,8 +854,9 @@ class EditorActivity : Activity(), TextureView.SurfaceTextureListener {
             .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         try {
             startActivity(Intent.createChooser(i, "Set as lock screen"))
+            finishHome()
         } catch (_: Exception) {
-            toast("The frame was saved to Pictures/fluxbg. Set it as your lock screen from the gallery.")
+            info("Saved to your gallery", "The picture was saved to Pictures/fluxbg. Open it in Gallery and use Set as > Lock screen.")
         }
     }
 
@@ -630,12 +864,12 @@ class EditorActivity : Activity(), TextureView.SurfaceTextureListener {
 
     override fun onResume() {
         super.onResume()
-        if (wantPlay) startPlayback()
+        if (!isImage && wantPlay) startPlayback()
     }
 
     override fun onPause() {
         pausePlayback()
-        if (durationMs > 0L && ::crop.isInitialized) Store.saveVideo(this, file, currentConfig())
+        if (ready && ::crop.isInitialized) Store.saveVideo(this, file, currentConfig())
         super.onPause()
     }
 
