@@ -88,6 +88,18 @@ class TrimBarView(c: Context) : View(c) {
         invalidate()
     }
 
+    /**
+     * A HorizontalScrollView measures its child with an UNSPECIFIED width and ignores the child's
+     * layout width, so the default View measuring would give this bar a width of 0 and the
+     * timeline would never appear. The width is therefore decided here.
+     */
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        val fallback = layoutParams?.width?.takeIf { it > 0 } ?: MeasureSpec.getSize(widthMeasureSpec)
+        val w = desiredWidth().takeIf { it > 0 } ?: fallback
+        val h = resolveSize((d * 76f).toInt(), heightMeasureSpec)
+        setMeasuredDimension(w, h)
+    }
+
     override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
         super.onLayout(changed, l, t, r, b)
         if (pendingScroll >= 0L && width > 0) {
