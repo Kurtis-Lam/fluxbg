@@ -1,11 +1,12 @@
 package com.me.fluxbg
 
 import android.app.Activity
-import android.app.AlertDialog
 import android.content.Intent
+import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.media.MediaMetadataRetriever
+import android.net.Uri
 import android.os.Bundle
 import android.text.SpannableString
 import android.text.Spanned
@@ -18,22 +19,26 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
-import android.widget.Toast
 import java.io.File
 
 /**
- * Home screen: shows every video stored in the app. Tap one to edit it, or add a new one.
+ * Home screen: "My library" of every stored image and video, switched with the Images / Videos
+ * buttons. Tap one to edit and apply it, hold to delete, or add a new static or dynamic wallpaper.
  */
 class MainActivity : Activity() {
 
-    private val reqPick = 1
+    private val reqPickVideo = 1
+    private val reqPickImage = 2
+    private val reqEdit = 3
 
     private lateinit var ui: Ui
     private lateinit var addBtn: TextView
-    private lateinit var heading: TextView
     private lateinit var hint: TextView
     private lateinit var grid: LinearLayout
+    private lateinit var tabViews: List<TextView>
     private var importing = false
+    private var tab = 0 // 0 = images, 1 = videos
+    private var tabChosen = false
 
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
@@ -62,15 +67,33 @@ class MainActivity : Activity() {
             setSpan(ForegroundColorSpan(Ui.B), 4, 6, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
         }
         col.addView(title)
-        col.addView(ui.label("Video wallpapers for Huawei", 14f, Ui.MUTED), ui.lp(-2, -2, 2))
+        col.addView(ui.label("Static and dynamic wallpapers for Huawei", 14f, Ui.MUTED), ui.lp(-2, -2, 2))
 
-        addBtn = ui.button("+  Add video", true).apply { setOnClickListener { pickVideo() } }
+        addBtn = ui.button("+  Add wallpaper", true).apply { setOnClickListener { showAddDialog() } }
         col.addView(addBtn, ui.lp(-1, -2, 20))
 
-        heading = ui.label("", 16f, Ui.TEXT, true)
-        col.addView(heading, ui.lp(-2, -2, 24))
-        hint = ui.label("Tap a video to edit it  ·  Hold to delete", 12f, Ui.MUTED)
-        col.addView(hint, ui.lp(-2, -2, 2))
+        col.addView(ui.label("My library", 20f, Ui.TEXT, true), ui.lp(-2, -2, 26))
+
+        val seg = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            background = ui.rounded(Ui.CARD, 16)
+            setPadding(ui.dp(4), ui.dp(4), ui.dp(4), ui.dp(4))
+        }
+        tabViews = listOf("Images", "Videos").mapIndexed { i, n ->
+            ui.label(n, 14f, Ui.MUTED, true).apply {
+                gravity = Gravity.CENTER
+                setPadding(0, ui.dp(11), 0, ui.dp(11))
+                setOnClickListener {
+                    tab = i
+                    tabChosen = true
+                    refresh()
+                }
+            }.also { seg.addView(it, LinearLayout.LayoutParams(0, -2, 1f)) }
+        }
+        col.addView(seg, ui.lp(-1, -2, 12))
+
+        hint = ui.label("Tap one to edit and apply it  ·  Hold to delete", 12f, Ui.MUTED)
+        col.addView(hint, ui.lp(-2, -2, 10))
 
         grid = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         col.addView(grid, ui.lp(-1, -2, 12))
@@ -80,6 +103,10 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        if (!tabChosen) {
+            tab = if (Store.images(this).isEmpty() && Store.library(this).isNotEmpty()) 1 else 0
+            tabChosen = true
+        }
         refresh()
     }
 
@@ -87,8 +114,18 @@ class MainActivity : Activity() {
 
     private fun refresh() {
         grid.removeAllViews()
-        val files = Store.library(this)
-        heading.text = if (files.isEmpty()) "No videos yet" else "Your videos  ·  ${files.size}"
+        val images = Store.images(this)
+        val videos = Store.library(this)
+        val files = if (tab == 0) images else videos
+
+        val counts = listOf(images.size, videos.size)
+        val names = listOf("Images", "Videos")
+        tabViews.forEachIndexed { i, v ->
+            val on = i == tab
+            v.text = "${names[i]}  ·  ${counts[i]}"
+            v.setTextColor(if (on) Ui.DARK else Ui.MUTED)
+            v.background = if (on) ui.gradient(12) else null
+        }
         hint.visibility = if (files.isEmpty()) View.GONE else View.VISIBLE
 
         if (files.isEmpty()) {
@@ -115,6 +152,7 @@ class MainActivity : Activity() {
     }
 
     private fun emptyCard(): View {
+        val images = tab == 0
         val empty = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
@@ -123,11 +161,14 @@ class MainActivity : Activity() {
                 cornerRadius = ui.dp(20).toFloat()
                 setStroke(ui.dp(2), Color.parseColor("#2C3646"), ui.dp(8).toFloat(), ui.dp(6).toFloat())
             })
-            setOnClickListener { pickVideo() }
+            setOnClickListener { if (images) pickImage() else pickVideo() }
         }
         empty.addView(ui.label("+", 44f, Ui.A, true).apply { gravity = Gravity.CENTER })
-        empty.addView(ui.label("Add your first video", 18f, Ui.TEXT, true).apply { gravity = Gravity.CENTER })
-        empty.addView(ui.label("Pick a clip from your gallery,\nthen crop and trim it", 13f, Ui.MUTED).apply {
+        empty.addView(ui.label(if (images) "Add your first image" else "Add your first video", 18f, Ui.TEXT, true).apply { gravity = Gravity.CENTER })
+        empty.addView(ui.label(
+            if (images) "Upload a photo from your gallery,\nthen crop it and set it" else "Pick a clip from your gallery,\nthen crop and trim it",
+            13f, Ui.MUTED
+        ).apply {
             gravity = Gravity.CENTER; setPadding(0, ui.dp(6), 0, 0)
         })
         return empty
@@ -185,44 +226,73 @@ class MainActivity : Activity() {
     }
 
     private fun openEditor(file: String) {
-        startActivity(Intent(this, EditorActivity::class.java).putExtra(EditorActivity.EXTRA_FILE, file))
+        tab = if (Store.isImage(file)) 0 else 1
+        @Suppress("DEPRECATION")
+        startActivityForResult(Intent(this, EditorActivity::class.java).putExtra(EditorActivity.EXTRA_FILE, file), reqEdit)
     }
 
     private fun confirmDelete(file: String) {
+        val image = Store.isImage(file)
+        val kind = if (image) "image" else "video"
         val used = Store.slotsUsing(this, file)
-        val msg = if (used.isEmpty()) "This removes the video from the app."
-        else "This video is set as your ${used.joinToString(" and ") { if (it == Slot.HOME) "home screen" else "lock screen" }} " +
-            "wallpaper. Deleting it stops that wallpaper."
-        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-            .setTitle("Delete video?")
-            .setMessage(msg)
-            .setPositiveButton("Delete") { _, _ ->
+        val msg = if (used.isEmpty()) "This removes the $kind from the app."
+        else "This $kind is set as your ${used.joinToString(" and ") { if (it == Slot.HOME) "home screen" else "lock screen" }} " +
+            "wallpaper. Deleting it removes it from the app; the wallpaper your phone is showing stays until you change it."
+        FluxDialog(this).icon("🗑").title("Delete $kind?").message(msg)
+            .button("Cancel", FluxDialog.SECONDARY)
+            .button("Delete", FluxDialog.DANGER) {
                 Thumbs.forget(file)
                 Store.delete(this, file)
                 refresh()
             }
-            .setNegativeButton("Cancel", null)
             .show()
     }
 
-    // ---------------------------------------------------------------- import
+    // ---------------------------------------------------------------- add / import
+
+    private fun showAddDialog() {
+        if (importing) return
+        FluxDialog(this).icon("+").title("Add wallpaper").message("What kind of wallpaper do you want to add?")
+            .option("🖼", "Static", "Upload an image from your gallery") { pickImage() }
+            .option("🎬", "Dynamic", "Pick a video to play as a live wallpaper") { pickVideo() }
+            .button("Cancel", FluxDialog.SECONDARY)
+            .show()
+    }
 
     private fun pickVideo() {
         if (importing) return
         val i = Intent(Intent.ACTION_GET_CONTENT).setType("video/*").addCategory(Intent.CATEGORY_OPENABLE)
         @Suppress("DEPRECATION")
-        startActivityForResult(i, reqPick)
+        startActivityForResult(i, reqPickVideo)
+    }
+
+    private fun pickImage() {
+        if (importing) return
+        val i = Intent(Intent.ACTION_GET_CONTENT).setType("image/*").addCategory(Intent.CATEGORY_OPENABLE)
+        @Suppress("DEPRECATION")
+        startActivityForResult(i, reqPickImage)
     }
 
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == reqEdit) {
+            val msg = data?.getStringExtra(EditorActivity.EXTRA_MSG)
+            if (resultCode == RESULT_OK && msg != null) ui.snack(this, msg)
+            return
+        }
         val uri = data?.data
-        if (requestCode != reqPick || resultCode != RESULT_OK || uri == null) return
+        if (resultCode != RESULT_OK || uri == null) return
+        if (requestCode == reqPickVideo) importFile(uri, false)
+        if (requestCode == reqPickImage) importFile(uri, true)
+    }
+
+    private fun importFile(uri: Uri, image: Boolean) {
         importing = true
-        addBtn.text = "Importing video…"
+        addBtn.text = if (image) "Importing image…" else "Importing video…"
         Thread {
-            val name = "wall_${System.currentTimeMillis()}.mp4"
+            val stamp = System.currentTimeMillis()
+            val name = if (image) "img_$stamp.jpg" else "wall_$stamp.mp4"
             val part = "$name.part"
             var ok = try {
                 contentResolver.openInputStream(uri)?.use { i ->
@@ -232,24 +302,33 @@ class MainActivity : Activity() {
                 false
             }
             if (ok) ok = File(filesDir, part).renameTo(File(filesDir, name))
-            if (ok) ok = readable(name)
+            if (ok) ok = if (image) readableImage(name) else readableVideo(name)
             if (!ok) {
                 File(filesDir, part).delete()
                 File(filesDir, name).delete()
             }
             runOnUiThread {
                 importing = false
-                addBtn.text = "+  Add video"
+                addBtn.text = "+  Add wallpaper"
                 if (ok) {
                     openEditor(name)
                 } else {
-                    Toast.makeText(this, "Couldn’t read that video.", Toast.LENGTH_LONG).show()
+                    FluxDialog.info(
+                        this, "Couldn’t read that file",
+                        if (image) "fluxbg couldn’t open that image. Try a JPG or PNG." else "fluxbg couldn’t open that video. Try an MP4."
+                    )
                 }
             }
         }.start()
     }
 
-    private fun readable(name: String): Boolean {
+    private fun readableImage(name: String): Boolean {
+        val o = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(File(filesDir, name).absolutePath, o)
+        return o.outWidth > 0 && o.outHeight > 0
+    }
+
+    private fun readableVideo(name: String): Boolean {
         val r = MediaMetadataRetriever()
         return try {
             r.setDataSource(File(filesDir, name).absolutePath)
