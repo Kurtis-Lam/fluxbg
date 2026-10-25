@@ -18,6 +18,7 @@ class CropOverlayView(c: Context) : View(c) {
 
     private val d = resources.displayMetrics.density
     private var vr = RectF()
+    private var pending: FloatArray? = null
     private var cx = 0.5f
     private var cy = 0.5f
     private var s = 1f
@@ -46,25 +47,37 @@ class CropOverlayView(c: Context) : View(c) {
         }
     })
 
-    fun setVideoRect(r: RectF) {
-        vr = r
-        clamp()
+    /** The overlay always covers exactly the video, so its own bounds are the video rectangle. */
+    override fun onSizeChanged(w: Int, h: Int, ow: Int, oh: Int) {
+        super.onSizeChanged(w, h, ow, oh)
+        val prev = if (vr.width() > 0f && vr.height() > 0f) getCrop() else pending
+        vr = RectF(0f, 0f, w.toFloat(), h.toFloat())
+        pending = null
+        if (prev != null) applyCrop(prev[0], prev[1], prev[2], prev[3]) else clamp()
         invalidate()
     }
 
     fun reset() {
+        pending = null
         cx = 0.5f; cy = 0.5f; s = 1f
         invalidate()
     }
 
     fun setCrop(l: Float, t: Float, r: Float, b: Float) {
-        if (vr.width() <= 0f || vr.height() <= 0f) return
+        if (vr.width() <= 0f || vr.height() <= 0f) {
+            pending = floatArrayOf(l, t, r, b)
+            return
+        }
+        applyCrop(l, t, r, b)
+        invalidate()
+    }
+
+    private fun applyCrop(l: Float, t: Float, r: Float, b: Float) {
         val (mw, mh) = maxSize()
         cx = (l + r) / 2f
         cy = (t + b) / 2f
         s = maxOf((r - l) * vr.width() / mw, (b - t) * vr.height() / mh).coerceIn(MIN_SCALE, 1f)
         clamp()
-        invalidate()
     }
 
     fun getCrop(): FloatArray {
