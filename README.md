@@ -6,12 +6,13 @@ Designed for Huawei phones (EMUI 8+ and HarmonyOS versions that run Android APKs
 
 ## Features
 
-- Pick any video from the gallery
+- Home screen is a library of every video you have added, with thumbnails and durations
+- Add a video from the gallery, then go straight to the editor
 - Crop with a fixed-aspect window matched to your screen: drag to move, pinch to resize
 - Trim with a timeline bar: thumbnail strip, draggable in/out handles and a scrub playhead
 - Preview playback that loops only the trimmed range
 - Separate settings for the home screen, the lock screen, or both
-- Still-frame option for lock screens that don't accept live wallpapers
+- Lock screen option that sets the frame at the playhead, with a fallback to the system Set as sheet
 - Crop is adapted automatically to each screen's aspect ratio, including foldables
 - Muted, GPU-rendered playback that pauses when the screen is off to save battery
 
@@ -43,13 +44,12 @@ Keep the project outside cloud-synced folders (Synology Drive, iCloud, Dropbox),
 ## Usage
 
 1. Install the APK (downloaded from `apks/` or built yourself) and open **fluxbg**.
-2. Choose **Home screen**, **Lock screen** or **Both** at the top.
-3. Tap **Choose a video**.
-4. Drag and pinch the crop window over the preview to frame the shot.
+3. On the home screen, tap **Add video** and pick a clip, or tap a video you added earlier. Hold a video to delete it.
+4. In the editor, drag and pinch the crop window over the preview to frame the shot.
 5. Drag the handles on the timeline to set the in and out points. Drag anywhere else on the bar to scrub.
 6. Tap the play button to preview the loop.
-7. Tap **Set as ... wallpaper** and confirm in the system preview.
-8. For the lock screen, choose **Lock screen** in the system preview if asked. If your Themes app does not allow live lock screens, tap **Set still frame on lock screen** to use the frame at the playhead.
+7. Under **Apply to**, choose **Home screen**, **Lock screen** or **Both**, then tap the main button and confirm in the system preview.
+8. For the lock screen, the main button sets the frame at the playhead as your lock screen picture. If your device blocks that, the system **Set as** sheet opens so you can pick Lock screen. **Try live video on lock screen** opens the live wallpaper preview instead.
 
 To change the video, crop or range later, edit it in the app and apply the wallpaper again.
 
@@ -66,7 +66,11 @@ To change the video, crop or range later, edit it in the app and apply the wallp
 
 ```
 app/src/main/java/com/me/fluxbg/
-  MainActivity.kt           Editor UI: video picker, crop, timeline trim, apply actions
+  MainActivity.kt           Home screen: library of stored videos, add and delete
+  EditorActivity.kt         Editor: preview playback, crop, timeline trim, apply actions
+  Ui.kt                     Shared colors and view helpers
+  Thumbs.kt                 Cached poster frames and durations for the library
+  PreviewFrame.kt           Keeps the video and crop overlay on the same rectangle
   CropOverlayView.kt        Drag and pinch crop window
   TrimBarView.kt            Timeline with thumbnails, trim handles and playhead
   FluxWallpaperService.kt   Live wallpaper service (home / lock aware)
