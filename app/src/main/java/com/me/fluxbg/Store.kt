@@ -25,6 +25,8 @@ object Store {
 
     private fun sp(c: Context) = c.getSharedPreferences("fluxbg", Context.MODE_PRIVATE)
 
+    fun isImage(file: String) = file.startsWith("img_")
+
     private fun read(p: SharedPreferences, key: String, file: String) = Config(
         file,
         p.getLong("${key}_start", 0L),
@@ -55,29 +57,50 @@ object Store {
         return read(p, slot, f)
     }
 
+    /** Records a live video as the wallpaper of a screen; replaces any still image recorded there. */
     fun save(c: Context, slot: String, cfg: Config) {
         val e = sp(c).edit()
+        e.remove("${slot}_img")
         e.putString("${slot}_file", cfg.file)
         write(e, slot, cfg)
         e.apply()
     }
 
-    fun slotsUsing(c: Context, file: String): List<String> {
-        val p = sp(c)
-        return listOf(Slot.HOME, Slot.LOCK).filter { p.getString("${it}_file", null) == file }
+    /** Records a still image as the wallpaper of a screen; replaces any live video recorded there. */
+    fun saveImage(c: Context, slot: String, file: String) {
+        val e = sp(c).edit()
+        KEYS.forEach { e.remove("${slot}_$it") }
+        e.putString("${slot}_img", file)
+        e.apply()
     }
 
-    // ------------------------------------------------------------ library (every stored video)
-
-    fun library(c: Context): List<String> {
-        val files = c.filesDir.listFiles { f -> f.isFile && f.name.startsWith("wall") && f.name.endsWith(".mp4") }
-            ?: return emptyList()
-        return files.map { it.name }.sortedByDescending {
-            it.removePrefix("wall_").removeSuffix(".mp4").toLongOrNull() ?: 0L
+    fun slotsUsing(c: Context, file: String): List<String> {
+        val p = sp(c)
+        return listOf(Slot.HOME, Slot.LOCK).filter {
+            p.getString("${it}_file", null) == file || p.getString("${it}_img", null) == file
         }
     }
 
-    /** Last crop and trim the user chose for a stored video, independent of any screen. */
+    // ------------------------------------------------------------ library (every stored video / image)
+
+    private fun stamp(name: String) =
+        name.substringAfter('_').substringBeforeLast('.').toLongOrNull() ?: 0L
+
+    /** Stored videos, newest first. */
+    fun library(c: Context): List<String> {
+        val files = c.filesDir.listFiles { f -> f.isFile && f.name.startsWith("wall") && f.name.endsWith(".mp4") }
+            ?: return emptyList()
+        return files.map { it.name }.sortedByDescending { stamp(it) }
+    }
+
+    /** Stored images, newest first. */
+    fun images(c: Context): List<String> {
+        val files = c.filesDir.listFiles { f -> f.isFile && f.name.startsWith("img_") && f.name.endsWith(".jpg") }
+            ?: return emptyList()
+        return files.map { it.name }.sortedByDescending { stamp(it) }
+    }
+
+    /** Last crop and trim the user chose for a stored file, independent of any screen. */
     fun loadVideo(c: Context, file: String): Config? {
         val p = sp(c)
         if (!File(c.filesDir, file).exists() || !p.contains("v_${file}_rev")) return null
@@ -95,6 +118,7 @@ object Store {
         val e = p.edit()
         for (slot in listOf(Slot.HOME, Slot.LOCK)) {
             if (p.getString("${slot}_file", null) == file) KEYS.forEach { e.remove("${slot}_$it") }
+            if (p.getString("${slot}_img", null) == file) e.remove("${slot}_img")
         }
         KEYS.forEach { e.remove("v_${file}_$it") }
         e.apply()
